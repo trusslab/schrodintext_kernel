@@ -1,0 +1,6 @@
+config SCHROBUF
+    tristate "Driver for SchrodinText"
+    depends on ARM64
+    default y if ARM64
+    help
+		Driver for SchrodinText. Requires Xen and OPTEE presence as well.
