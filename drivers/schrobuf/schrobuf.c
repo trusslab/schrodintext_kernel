@@ -85,12 +85,18 @@ struct schrobuf_register_ioctl {
 	unsigned long encrypted_text;
 	unsigned int text_len;
 	unsigned int text_buf_size;
+	unsigned long char_widths;
+	unsigned int char_widths_size;
 };
 
 struct schrobuf_resolve_ioctl {
-	unsigned long dst_addr;
-	unsigned int text_pos;
-	bool conditional_char;
+    unsigned long dst_addr;
+    unsigned int text_pos;
+	unsigned int px;			// pixel coordinate on x-axis
+	unsigned int fb_bytespp;
+    bool conditional_char;
+	bool trust_addr;			// tell Xen to composite text at dst_addr, do not perform adjustment (set true for monospaced fonts, false otherwise)
+	bool last_res; 				// last resolve for the current text_pos?
 };
 
 #define XENMEM_schrobuf_register		37
@@ -105,6 +111,8 @@ struct xen_schrobuf_register_data {
 	uint64_t encrypted_text;
 	uint32_t text_len;
 	uint32_t text_buf_size;
+	uint64_t char_widths;
+	uint32_t char_widths_size;
 };
 
 struct xen_schrobuf_unregister_data {
@@ -115,7 +123,11 @@ struct xen_schrobuf_resolve_data {
 	uint64_t handle;
 	uint64_t dst_paddr;
 	uint32_t text_pos;
+	uint32_t px;
+	uint32_t fb_bytespp;
 	bool conditional_char;
+	bool trust_addr;
+	bool last_res;
 };
 
 #define OPENED		1
@@ -242,6 +254,7 @@ static long schrobuf_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 		struct xen_schrobuf_register_data hyp_data;
 		void *k_cipher = NULL;
 		uint8_t *k_mBuffersMem = NULL;
+		int* k_char_widths = NULL;
 		unsigned int c_last_index = 0;
 
 		ret = copy_from_user(&data, (void *) arg, sizeof(data));
@@ -269,7 +282,24 @@ static long schrobuf_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 			kfree(k_cipher);
 			kfree(k_mBuffersMem);
 			return -EFAULT;
-		} 
+		}
+
+		if (data.char_widths_size && data.char_widths) {
+			k_char_widths = kmalloc(data.char_widths_size * sizeof(int), GFP_KERNEL);
+			if (k_char_widths == NULL) {
+				kfree(k_cipher);
+				kfree(k_mBuffersMem);
+				PRINTK0("Error: Could not allocate kernel char_widths. Exiting (-1).\n");
+				return -1;
+			}
+			if (copy_from_user(k_char_widths, (int*) data.char_widths, data.char_widths_size * sizeof(int)) != 0) {
+				PRINTK0("Could not copy_from_user data.char_widths. Returning -EFAULT.\n");
+				kfree(k_cipher);
+				kfree(k_mBuffersMem);
+				kfree(k_char_widths);
+				return -EFAULT;
+			}
+		}		 
 
 		// Replace data.buffers_mem with our new kernel allocated buffer to send to Xen; num_buffers/buffer_size don't change
 		hyp_data.buffers_mem = (uint64_t) k_mBuffersMem;
@@ -278,6 +308,8 @@ static long schrobuf_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 		hyp_data.encrypted_text = (uint64_t) k_cipher;
 		hyp_data.text_len = (uint32_t) data.text_len;
 		hyp_data.text_buf_size = (uint32_t) data.text_buf_size;
+		hyp_data.char_widths = k_char_widths ? (uint64_t) k_char_widths : 0;
+		hyp_data.char_widths_size = (uint32_t) data.char_widths_size;
 		
 		file->private_data = (void *) &file->private_data;
 		hyp_data.handle = (uint64_t) file->private_data;
@@ -333,8 +365,12 @@ static long schrobuf_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 		hyp_data.handle = (uint64_t) file->private_data;
 		hyp_data.dst_paddr = (uint64_t) dst_paddr;
 		hyp_data.text_pos = (uint32_t) data.text_pos;
+		hyp_data.px = (uint32_t) data.px;
+		hyp_data.fb_bytespp = (uint32_t) data.fb_bytespp;
 		hyp_data.conditional_char = data.conditional_char;
-		
+		hyp_data.trust_addr = data.trust_addr;
+		hyp_data.last_res = data.last_res;		
+
 		ret = HYPERVISOR_memory_op(XENMEM_schrobuf_resolve, &hyp_data);
 
 		return ret;
@@ -483,4 +519,5 @@ MODULE_AUTHOR("Nicholas Wei");
 MODULE_DESCRIPTION("SchrodinText kernel module");
 MODULE_VERSION("1.0");
 #endif /* !IN_KERNEL */
+
 
